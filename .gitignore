@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment variables (contains secrets)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Prisma - local SQLite database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Prisma generated client (can be regenerated via `prisma generate`)
+node_modules/.prisma/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
