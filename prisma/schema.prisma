@@ -38,6 +38,7 @@ model TimeEntry {
   sun         Float?
   notes       String   @default("{}")
   isSubmitted Boolean  @default(false)
+  status      String   @default("Draft")
   schedule    Schedule @relation(fields: [scheduleId], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

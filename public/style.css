@@ -85,6 +85,13 @@ body {
   transform: scale(.97);
 }
 
+.btn:disabled,
+.btn[disabled] {
+  opacity: .45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-primary {
   background: var(--purple);
   color: var(--white);
@@ -602,6 +609,11 @@ textarea {
 .badge-submitted {
   background: var(--success-light);
   color: var(--success);
+}
+
+.badge-saved {
+  background: #e3f2fd;
+  color: #1565c0;
 }
 
 .badge-draft {

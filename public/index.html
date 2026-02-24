@@ -149,7 +149,7 @@
               <button class="btn btn-success" id="save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> Save
               </button>
-              <button class="btn btn-primary" id="submit-btn">
+              <button class="btn btn-primary" id="submit-btn" disabled>
                 <i class="fa-solid fa-check-circle"></i> Submit Timesheet
               </button>
             </div>
@@ -160,13 +160,13 @@
               <thead>
                 <tr>
                   <th class="col-project">Project / Task</th>
+                  <th class="col-day">Sun</th>
                   <th class="col-day">Mon</th>
                   <th class="col-day">Tue</th>
                   <th class="col-day">Wed</th>
                   <th class="col-day">Thu</th>
                   <th class="col-day">Fri</th>
                   <th class="col-day">Sat</th>
-                  <th class="col-day">Sun</th>
                   <th class="col-total">Total</th>
                   <th class="col-notes">Notes</th>
                   <th class="col-status">Status</th>
@@ -183,13 +183,13 @@
               <tfoot>
                 <tr class="totals-row">
                   <td><strong>Daily Totals</strong></td>
+                  <td id="tot-sun">0.0</td>
                   <td id="tot-mon">0.0</td>
                   <td id="tot-tue">0.0</td>
                   <td id="tot-wed">0.0</td>
                   <td id="tot-thu">0.0</td>
                   <td id="tot-fri">0.0</td>
                   <td id="tot-sat">0.0</td>
-                  <td id="tot-sun">0.0</td>
                   <td id="tot-week">0.0</td>
                   <td colspan="2"></td>
                 </tr>

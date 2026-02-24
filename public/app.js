@@ -9,8 +9,10 @@
 const API_BASE = '';   // same origin
 let token = null;
 let currentUser = null;
-// Map: scheduleId → { entryId, notes, isSubmitted }
+// Map: scheduleId → { entryId, notes, isSubmitted, status }
 let entryMap = {};
+// Track schedule IDs that have been submitted (for filtering the schedule list)
+const submittedScheduleIds = new Set();
 
 // ── DOM Shortcuts ─────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -32,11 +34,20 @@ document.addEventListener('DOMContentLoaded', () => {
         showApp();
     }
 
-    // Set default week ending = this Sunday
+    // Set default week ending = this Saturday; restrict to Saturdays only
     const we = $('week-ending');
-    we.value = getThisSunday();
+    we.value = getThisSaturday();
     we.addEventListener('change', () => {
+        // Snap to nearest upcoming Saturday if a non-Saturday was picked
+        const picked = new Date(we.value + 'T00:00:00');
+        const dow = picked.getDay(); // 0=Sun, 6=Sat
+        if (dow !== 6) {
+            const diff = (6 - dow + 7) % 7 || 7;
+            picked.setDate(picked.getDate() + diff);
+            we.value = picked.toISOString().split('T')[0];
+        }
         entryMap = {};
+        submittedScheduleIds.clear();
         renderEntryTable();
         loadEntriesForWeek();
     });
@@ -53,6 +64,8 @@ document.addEventListener('DOMContentLoaded', () => {
         $('login-screen').classList.remove('hidden');
         $('entry-tbody').innerHTML = `<tr id="entry-empty-row"><td colspan="11" class="table-empty"><i class="fa-solid fa-arrow-down"></i> Select schedules below and click <strong>Copy Selected</strong></td></tr>`;
         entryMap = {};
+        submittedScheduleIds.clear();
+        $('submit-btn').disabled = true;
     });
 
     // Copy Selected
@@ -140,12 +153,14 @@ async function loadSchedules() {
     tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Loading...</td></tr>`;
     try {
         const schedules = await api('GET', '/api/schedules');
-        if (!schedules.length) {
+        // ── #4 Filter out schedules that have a submitted entry for this week
+        const visible = schedules.filter(s => !submittedScheduleIds.has(s.id));
+        if (!visible.length) {
             tbody.innerHTML = `<tr><td colspan="4" class="table-empty">No schedules assigned yet.</td></tr>`;
             return;
         }
         tbody.innerHTML = '';
-        schedules.forEach(s => {
+        visible.forEach(s => {
             const tr = el('tr');
             tr.innerHTML = `
         <td class="col-check">
@@ -199,10 +214,14 @@ async function copySelectedToEntry() {
 }
 
 // ── Entry Row ─────────────────────────────────────────────────────
-const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+// Sunday-first column order
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function addEntryRow(schedId, title, entryId, data, isSubmitted) {
-    entryMap[schedId] = { entryId: entryId || null, notes: data.notes || {}, isSubmitted: !!isSubmitted };
+    const status = data.status || (isSubmitted ? 'Submitted' : 'Draft');
+    entryMap[schedId] = { entryId: entryId || null, notes: data.notes || {}, isSubmitted: !!isSubmitted, status };
+
+    if (isSubmitted) submittedScheduleIds.add(schedId);
 
     const tr = el('tr');
     tr.id = `entry-row-${schedId}`;
@@ -233,17 +252,16 @@ function addEntryRow(schedId, title, entryId, data, isSubmitted) {
         <i class="fa-solid fa-note-sticky"></i>
       </button>
     </td>
-    <td>
-      ${isSubmitted
-            ? '<span class="badge badge-submitted"><i class="fa-solid fa-check"></i> Submitted</span>'
-            : '<span class="badge badge-draft"><i class="fa-solid fa-pen"></i> Draft</span>'}
-    </td>`;
+    <td id="status-badge-${schedId}">${renderStatusBadge(status)}</td>`;
 
     $('entry-tbody').appendChild(tr);
 
-    // Wire hour input listeners
+    // Wire hour inputs: recalc totals AND disable submit-btn on change
     tr.querySelectorAll('.hour-input').forEach(inp => {
-        inp.addEventListener('input', () => recalcTotals());
+        inp.addEventListener('input', () => {
+            recalcTotals();
+            $('submit-btn').disabled = true;  // must re-save after changes
+        });
     });
 
     // Notes button
@@ -254,6 +272,12 @@ function addEntryRow(schedId, title, entryId, data, isSubmitted) {
     recalcRowTotal(schedId);
 }
 
+function renderStatusBadge(status) {
+    if (status === 'Submitted') return '<span class="badge badge-submitted"><i class="fa-solid fa-check"></i> Submitted</span>';
+    if (status === 'Saved') return '<span class="badge badge-saved"><i class="fa-solid fa-floppy-disk"></i> Saved</span>';
+    return '<span class="badge badge-draft"><i class="fa-solid fa-pen"></i> Draft</span>';
+}
+
 // ── Load existing entries for current week ────────────────────────
 async function loadEntriesForWeek() {
     const weekEnding = $('week-ending').value;
@@ -261,6 +285,9 @@ async function loadEntriesForWeek() {
     try {
         const entries = await api('GET', `/api/entries?weekEnding=${weekEnding}`);
         entries.forEach(e => {
+            // Track submitted schedule IDs for filtering the schedule table
+            if (e.isSubmitted) submittedScheduleIds.add(e.scheduleId);
+
             // Only show entries that belong to this user's schedules
             const title = e.schedule?.projectTitle || `Schedule #${e.scheduleId}`;
             if (!$(`entry-row-${e.scheduleId}`)) {
@@ -307,6 +334,7 @@ function recalcTotals() {
 
 function renderEntryTable() {
     $('entry-tbody').innerHTML = `<tr id="entry-empty-row"><td colspan="11" class="table-empty"><i class="fa-solid fa-arrow-down"></i> Select schedules below and click <strong>Copy Selected</strong></td></tr>`;
+    $('submit-btn').disabled = true;
     updateEntryBadge();
 }
 
@@ -336,22 +364,27 @@ async function saveEntries() {
         });
 
         try {
+            let updatedEntry;
             if (meta?.entryId) {
-                // Update existing
-                const updated = await api('PATCH', `/api/entries/${meta.entryId}`, {
+                // Update existing → server sets status: 'Saved'
+                updatedEntry = await api('PATCH', `/api/entries/${meta.entryId}`, {
                     ...hoursData, notes: meta.notes
                 });
-                entryMap[schedId].entryId = updated.id;
+                entryMap[schedId].entryId = updatedEntry.id;
             } else {
-                // Create new
-                const created = await api('POST', '/api/entries', {
+                // Create new → server sets status: 'Draft'
+                updatedEntry = await api('POST', '/api/entries', {
                     scheduleId: schedId,
                     weekEnding,
                     ...hoursData,
                     notes: meta?.notes || {},
                 });
-                entryMap[schedId] = { ...entryMap[schedId], entryId: created.id };
+                entryMap[schedId] = { ...entryMap[schedId], entryId: updatedEntry.id };
             }
+            // Update local status and badge
+            entryMap[schedId].status = updatedEntry.status || 'Saved';
+            const badgeCell = $(`status-badge-${schedId}`);
+            if (badgeCell) badgeCell.innerHTML = renderStatusBadge(entryMap[schedId].status);
             saved++;
         } catch (err) {
             console.error('Save error for sched', schedId, err);
@@ -359,8 +392,13 @@ async function saveEntries() {
         }
     }
 
-    if (errors) showToast(`Saved ${saved} rows. ${errors} error(s).`, 'warn');
-    else showToast(`✅ ${saved} row(s) saved successfully`, 'success');
+    if (errors) {
+        showToast(`Saved ${saved} rows. ${errors} error(s).`, 'warn');
+    } else {
+        showToast(`✅ ${saved} row(s) saved successfully`, 'success');
+        // Enable submit only when all saves succeeded
+        if (saved > 0) $('submit-btn').disabled = false;
+    }
     setStatus(`Last saved: ${new Date().toLocaleTimeString()}`);
 }
 
@@ -394,8 +432,17 @@ async function doSubmit() {
     });
     if (!unsubmitted.length) return;
 
-    // Save first
-    await saveEntries();
+    // ── #5 Notes required ────────────────────────────────────────
+    for (const tr of unsubmitted) {
+        const sid = parseInt(tr.dataset.schedId);
+        const notes = entryMap[sid]?.notes || {};
+        const hasNote = Object.values(notes).some(v => v && v.trim());
+        if (!hasNote) {
+            const title = tr.querySelector('td')?.textContent || `Row ${sid}`;
+            alert(`Please fill the notes for: ${title}`);
+            return;
+        }
+    }
 
     let submitted = 0;
     for (const tr of unsubmitted) {
@@ -405,11 +452,13 @@ async function doSubmit() {
         try {
             await api('POST', `/api/entries/${meta.entryId}/submit`);
             entryMap[sid].isSubmitted = true;
+            entryMap[sid].status = 'Submitted';
+            submittedScheduleIds.add(sid);
             // Update row UI
             tr.classList.add('submitted-row');
             tr.querySelectorAll('.hour-input').forEach(i => i.disabled = true);
-            const badge = tr.querySelector('.badge');
-            if (badge) badge.outerHTML = '<span class="badge badge-submitted"><i class="fa-solid fa-check"></i> Submitted</span>';
+            const badgeCell = $(`status-badge-${sid}`);
+            if (badgeCell) badgeCell.innerHTML = renderStatusBadge('Submitted');
             submitted++;
         } catch (err) {
             console.error('Submit error', err);
@@ -417,6 +466,9 @@ async function doSubmit() {
     }
     showToast(`✅ ${submitted} row(s) submitted`, 'success');
     setStatus(`Submitted at ${new Date().toLocaleTimeString()}`);
+    $('submit-btn').disabled = true;
+    // Refresh schedules table to filter now-submitted rows
+    loadSchedules();
 }
 
 // ── Notes Modal ───────────────────────────────────────────────────
@@ -505,11 +557,16 @@ async function loadAdminSchedules() {
 async function handleCreateTask(e) {
     e.preventDefault();
     const title = $('task-title').value.trim();
-    const userId = parseInt($('task-user').value);
+    const userId = $('task-user').value;
     if (!title) return showToast('Enter a project title', 'warn');
+    // ── #3 User selection is required ───────────────────────────
+    if (!userId) {
+        alert('Please select a user before assigning the task.');
+        return;
+    }
 
     try {
-        await api('POST', '/api/schedules', { projectTitle: title, userId: userId || undefined });
+        await api('POST', '/api/schedules', { projectTitle: title, userId: parseInt(userId) });
         showToast('✅ Task created successfully', 'success');
         $('task-title').value = '';
         $('task-user').value = '';
@@ -543,10 +600,10 @@ async function api(method, url, body, useAuth = true) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-function getThisSunday() {
+function getThisSaturday() {
     const d = new Date();
-    const day = d.getDay(); // 0=Sun
-    const diff = day === 0 ? 0 : 7 - day;
+    const day = d.getDay();  // 0=Sun, 6=Sat
+    const diff = (6 - day + 7) % 7;  // days until next Saturday (0 if today is Saturday)
     d.setDate(d.getDate() + diff);
     return d.toISOString().split('T')[0];
 }

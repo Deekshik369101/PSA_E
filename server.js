@@ -13,9 +13,9 @@ const EXTERNAL_API_KEY = process.env.EXTERNAL_API_KEY || 'psa-external-api-key-u
 
 // ─── Hardcoded Credentials ───────────────────────────────────────────────────
 const USERS = [
-  { id: 1, username: 'admin',  password: 'admin123',  role: 'ADMIN' },
-  { id: 2, username: 'user1',  password: 'user123',   role: 'USER'  },
-  { id: 3, username: 'user2',  password: 'user123',   role: 'USER'  },
+  { id: 1, username: 'admin', password: 'admin123', role: 'ADMIN' },
+  { id: 2, username: 'user1', password: 'user123', role: 'USER' },
+  { id: 3, username: 'user2', password: 'user123', role: 'USER' },
 ];
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -97,10 +97,10 @@ app.post('/api/schedules', authenticate, requireAdmin, async (req, res) => {
   try {
     const { projectTitle, userId } = req.body;
     if (!projectTitle) return res.status(400).json({ error: 'projectTitle required' });
+    if (!userId) return res.status(400).json({ error: 'userId required — please select a user' });
 
-    const targetUserId = userId || req.user.id;
     const schedule = await prisma.schedule.create({
-      data: { projectTitle, userId: targetUserId, isAssigned: !!userId },
+      data: { projectTitle, userId: parseInt(userId), isAssigned: true },
     });
     res.status(201).json(schedule);
   } catch (err) {
@@ -168,6 +168,7 @@ app.post('/api/entries', authenticate, async (req, res) => {
         mon: mon ?? null, tue: tue ?? null, wed: wed ?? null,
         thu: thu ?? null, fri: fri ?? null, sat: sat ?? null, sun: sun ?? null,
         notes: notes ? JSON.stringify(notes) : '{}',
+        status: 'Draft',
       },
     });
     res.status(201).json({ ...entry, notes: safeParseJSON(entry.notes) });
@@ -176,7 +177,7 @@ app.post('/api/entries', authenticate, async (req, res) => {
   }
 });
 
-// PATCH /api/entries/:id - Update hours and/or notes
+// PATCH /api/entries/:id - Update hours and/or notes (status → Saved)
 app.patch('/api/entries/:id', authenticate, async (req, res) => {
   try {
     const entryId = parseInt(req.params.id);
@@ -185,7 +186,7 @@ app.patch('/api/entries/:id', authenticate, async (req, res) => {
     if (existing.isSubmitted) return res.status(400).json({ error: 'Entry already submitted' });
 
     const { mon, tue, wed, thu, fri, sat, sun, notes } = req.body;
-    const updateData = {};
+    const updateData = { status: 'Saved' };
     if (mon !== undefined) updateData.mon = mon;
     if (tue !== undefined) updateData.tue = tue;
     if (wed !== undefined) updateData.wed = wed;
@@ -202,13 +203,13 @@ app.patch('/api/entries/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/entries/:id/submit - Lock/submit a time entry
+// POST /api/entries/:id/submit - Lock/submit a time entry (status → Submitted)
 app.post('/api/entries/:id/submit', authenticate, async (req, res) => {
   try {
     const entryId = parseInt(req.params.id);
     const entry = await prisma.timeEntry.update({
       where: { id: entryId },
-      data: { isSubmitted: true },
+      data: { isSubmitted: true, status: 'Submitted' },
     });
     res.json({ ...entry, notes: safeParseJSON(entry.notes) });
   } catch (err) {
@@ -271,13 +272,13 @@ app.post('/api/external/submit-timesheet', requireApiKey, async (req, res) => {
     const data = {
       scheduleId: parseInt(scheduleId),
       weekEnding: weekDate,
-      mon:  hours?.mon   ?? hours?.monday    ?? null,
-      tue:  hours?.tue   ?? hours?.tuesday   ?? null,
-      wed:  hours?.wed   ?? hours?.wednesday ?? null,
-      thu:  hours?.thu   ?? hours?.thursday  ?? null,
-      fri:  hours?.fri   ?? hours?.friday    ?? null,
-      sat:  hours?.sat   ?? hours?.saturday  ?? null,
-      sun:  hours?.sun   ?? hours?.sunday    ?? null,
+      mon: hours?.mon ?? hours?.monday ?? null,
+      tue: hours?.tue ?? hours?.tuesday ?? null,
+      wed: hours?.wed ?? hours?.wednesday ?? null,
+      thu: hours?.thu ?? hours?.thursday ?? null,
+      fri: hours?.fri ?? hours?.friday ?? null,
+      sat: hours?.sat ?? hours?.saturday ?? null,
+      sun: hours?.sun ?? hours?.sunday ?? null,
       notes: notes ? JSON.stringify(notes) : '{}',
       isSubmitted: true,
     };
