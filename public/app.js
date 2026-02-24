@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
         entryMap = {};
         submittedScheduleIds.clear();
         $('submit-btn').disabled = true;
+        stopCopyAllPolling();
     });
 
     // Copy Selected
@@ -144,6 +145,7 @@ function showApp() {
         $('user-panel').classList.remove('hidden');
         loadSchedules();
         loadEntriesForWeek();
+        startCopyAllPolling();  // begin listening for external triggers
     }
 }
 
@@ -164,7 +166,7 @@ async function loadSchedules() {
             const tr = el('tr');
             tr.innerHTML = `
         <td class="col-check">
-          <input type="checkbox" class="sched-check" data-id="${s.id}" data-title="${escHtml(s.projectTitle)}" />
+          <input type="checkbox" class="sched-check schedule-checkbox" data-id="${s.id}" data-title="${escHtml(s.projectTitle)}" />
         </td>
         <td>${escHtml(s.projectTitle)}</td>
         <td><span class="badge ${s.isAssigned ? 'badge-assigned' : 'badge-open'}">${s.isAssigned ? '✓ Assigned' : 'Unassigned'}</span></td>
@@ -181,6 +183,191 @@ async function loadSchedules() {
         tbody.innerHTML = `<tr><td colspan="4" class="table-empty" style="color:#c62828">${err.message}</td></tr>`;
     }
 }
+
+// ── External Automation ──────────────────────────────────────────────────────
+
+/** Small sleep helper for pacing async automation steps */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  window.externalTriggerSelectAndCopy
+//  Simple: select all schedules and copy them to the Time Entry table.
+// ─────────────────────────────────────────────────────────────────────────────
+function externalTriggerSelectAndCopy() {
+    console.log('[PSA Automation] Quick trigger: selecting all schedules and copying…');
+    const allCheck = $('select-all-check');
+    if (allCheck) allCheck.checked = true;
+    document.querySelectorAll('.schedule-checkbox').forEach(cb => { cb.checked = true; });
+    updateSelectedCount();
+    copySelectedToEntry();
+    console.log('[PSA Automation] Quick trigger complete.');
+}
+window.externalTriggerSelectAndCopy = externalTriggerSelectAndCopy;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  window.executeExternalWorkflow(workflowData)
+//  Full 6-step automation:
+//    1. Select all schedules
+//    2. Copy to Time Entry table
+//    3. Inject hours + notes into the new rows
+//    4. Commit notes to local state (entryMap)
+//    5. Save  →  status: Draft → Saved  (enables Submit button)
+//    6. Submit →  status: Saved → Submitted
+//
+//  workflowData shape:
+//    {
+//      hours: { sun:8, mon:8, tue:8, wed:8, thu:8, fri:8, sat:0 }
+//             OR { all: 8 }   (same value for every day)
+//             OR a bare number (same value for every day)
+//      notes: "Text applied to Mon-Fri"
+//             OR { mon:"...", tue:"...", ... }   (per-day)
+//    }
+// ─────────────────────────────────────────────────────────────────────────────
+async function executeExternalWorkflow(workflowData = {}) {
+    const { hours = {}, notes = '' } = workflowData;
+    const LOG = (msg) => console.log(`[PSA Workflow] ${msg}`);
+    const WARN = (msg) => console.warn(`[PSA Workflow] ⚠ ${msg}`);
+
+    LOG('═══ Starting 6-step automation ═══');
+    LOG('Payload received: ' + JSON.stringify(workflowData));
+
+    // ── Step 1: Select All Schedules ────────────────────────────────────────
+    LOG('Step 1: Selecting all schedules…');
+    const allCheck = $('select-all-check');
+    if (allCheck) allCheck.checked = true;
+    // Target ONLY the Schedules table (.schedule-checkbox), NOT the Time Entry table
+    document.querySelectorAll('#schedules-tbody .schedule-checkbox, .schedule-checkbox')
+        .forEach(cb => { cb.checked = true; });
+    updateSelectedCount();
+    LOG('Step 1 complete — all schedule checkboxes selected.');
+
+    // ── Step 2: Trigger Copy ─────────────────────────────────────────────────
+    LOG('Step 2: Copying selected schedules to the Time Entry table…');
+    await copySelectedToEntry();
+    await sleep(350); // allow DOM update
+    LOG('Step 2 complete — rows added to Time Entry table.');
+
+    // ── Step 3: Inject Hours & Notes ─────────────────────────────────────────
+    LOG('Step 3: Injecting hours and notes into every new entry row…');
+    const entryRows = document.querySelectorAll('#entry-tbody tr[id^="entry-row-"]');
+
+    for (const tr of entryRows) {
+        const schedId = parseInt(tr.dataset.schedId);
+        if (entryMap[schedId]?.isSubmitted) continue; // skip already-submitted rows
+
+        // — Inject hours —
+        tr.querySelectorAll('.hour-input').forEach(inp => {
+            const day = inp.dataset.day;
+            let val;
+            if (typeof hours === 'number') {
+                val = hours;
+            } else if (typeof hours.all === 'number') {
+                val = hours.all;
+            } else if (hours[day] !== undefined) {
+                val = hours[day];
+            }
+            if (val !== undefined && val !== null) {
+                inp.value = val;
+                // Dispatch both 'input' and 'change' so internal state (recalcTotals,
+                // the submit-btn disable logic) all fire correctly.
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+
+        // — Inject notes into entryMap (used by saveEntries) —
+        if (notes) {
+            const notesObj = (typeof notes === 'string')
+                ? { mon: notes, tue: notes, wed: notes, thu: notes, fri: notes }
+                : notes;
+            if (!entryMap[schedId]) entryMap[schedId] = {};
+            entryMap[schedId].notes = notesObj;
+
+            // Update the visual indicator on the notes button
+            const hasAny = Object.values(notesObj).some(v => v && v.trim());
+            const notesBtn = tr.querySelector('.notes-btn');
+            if (notesBtn) notesBtn.classList.toggle('has-notes', hasAny);
+        }
+        LOG(`  → Row schedId=${schedId} — hours and notes injected.`);
+    }
+    LOG('Step 3 complete — all rows updated.');
+
+    // ── Step 4: Notes committed ──────────────────────────────────────────────
+    // Notes are already in entryMap (read by saveEntries). No modal interaction needed.
+    LOG('Step 4: Notes committed to local state (entryMap). No modal save required.');
+
+    // ── Step 5: Save ─────────────────────────────────────────────────────────
+    LOG('Step 5: Saving entries (Draft → Saved)…');
+    await saveEntries();
+    await sleep(400); // let the UI settle
+
+    if ($('submit-btn').disabled) {
+        WARN('Step 5: Submit button is STILL disabled after save. A save error likely occurred.');
+        WARN('Workflow aborted at Step 5. Check the console and network tab for details.');
+        showToast('⚠ Automation: save failed — workflow aborted', 'error');
+        return;
+    }
+    LOG('Step 5 complete — status is now "Saved". Submit button enabled.');
+
+    // ── Step 6: Submit ───────────────────────────────────────────────────────
+    LOG('Step 6: Validating notes and submitting entries (Saved → Submitted)…');
+
+    // Mirror the notes-required guard from doSubmit() for a clean console warning
+    const unsubmitted = [...document.querySelectorAll('#entry-tbody tr[id^="entry-row-"]')]
+        .filter(tr => !entryMap[parseInt(tr.dataset.schedId)]?.isSubmitted);
+
+    for (const tr of unsubmitted) {
+        const sid = parseInt(tr.dataset.schedId);
+        const rowNotes = entryMap[sid]?.notes || {};
+        const hasNote = Object.values(rowNotes).some(v => v && v.trim());
+        if (!hasNote) {
+            const title = tr.querySelector('td')?.textContent?.trim() || `Row ${sid}`;
+            WARN(`Step 6 aborted: Notes are empty for "${title}".`);
+            alert(`Please fill the notes for: ${title}`);
+            return;
+        }
+    }
+
+    // Call doSubmit() directly — bypass the confirm modal for automation
+    await doSubmit();
+    LOG('Step 6 complete — entries submitted.');
+    LOG('═══ Full workflow finished successfully! ═══');
+    showToast('✅ Automation workflow complete', 'success');
+}
+window.executeExternalWorkflow = executeExternalWorkflow;
+
+// ── Poll for backend-triggered automation ────────────────────────────────────
+let _copyAllPollTimer = null;
+
+function startCopyAllPolling(intervalMs = 3000) {
+    stopCopyAllPolling();
+    _copyAllPollTimer = setInterval(async () => {
+        if (!token) { stopCopyAllPolling(); return; }
+        try {
+            const data = await api('GET', '/api/external/schedules/copy-all-pending');
+            if (data.pending) {
+                if (data.workflowData) {
+                    // Full 6-step automation triggered via POST body hours/notes
+                    showToast('⚡ Executing full automation workflow…', 'info');
+                    console.log('[PSA Poll] workflowData received:', data.workflowData);
+                    await executeExternalWorkflow(data.workflowData);
+                } else {
+                    // Simple select-all-and-copy trigger (no payload)
+                    showToast('⚡ External trigger — selecting all and copying…', 'info');
+                    externalTriggerSelectAndCopy();
+                }
+            }
+        } catch (_) { /* silently ignore poll errors */ }
+    }, intervalMs);
+}
+
+function stopCopyAllPolling() {
+    if (_copyAllPollTimer) {
+        clearInterval(_copyAllPollTimer);
+        _copyAllPollTimer = null;
+    }
+}
+
 
 function updateSelectedCount() {
     const n = document.querySelectorAll('.sched-check:checked').length;

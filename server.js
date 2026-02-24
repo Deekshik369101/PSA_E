@@ -10,6 +10,10 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'psa-secret';
 const EXTERNAL_API_KEY = process.env.EXTERNAL_API_KEY || 'psa-external-api-key-uipath-2024';
+const EXTERNAL_PROJECT_KEY = process.env.EXTERNAL_PROJECT_KEY || 'psa-external-copy-key-2024';
+
+// ─── In-memory trigger (signals frontend to run automation workflow) ───────────
+let pendingTrigger = { active: false, workflowData: null };
 
 // ─── Hardcoded Credentials ───────────────────────────────────────────────────
 const USERS = [
@@ -49,6 +53,14 @@ function requireApiKey(req, res, next) {
   const key = req.headers['x-api-key'];
   if (key !== EXTERNAL_API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
+  }
+  next();
+}
+
+function requireProjectKey(req, res, next) {
+  const key = req.headers['x-api-key'];
+  if (key !== EXTERNAL_PROJECT_KEY) {
+    return res.status(401).json({ error: 'Invalid project API key' });
   }
   next();
 }
@@ -218,6 +230,31 @@ app.post('/api/entries/:id/submit', authenticate, async (req, res) => {
 });
 
 // ─── External API Routes (X-API-KEY secured) ─────────────────────────────────
+
+// POST /api/external/schedules/trigger-copy-all
+// External projects call this with optional workflowData { hours, notes } to run full automation.
+app.post('/api/external/schedules/trigger-copy-all', requireProjectKey, (req, res) => {
+  const { hours, notes } = req.body || {};
+  const workflowData = (hours || notes) ? { hours: hours || {}, notes: notes || '' } : null;
+  pendingTrigger = { active: true, workflowData };
+  res.json({
+    success: true,
+    mode: workflowData ? 'full-workflow' : 'select-and-copy',
+    message: workflowData
+      ? 'Full 6-step workflow queued. Frontend will execute it on the next poll cycle (~3 s).'
+      : 'Copy-all trigger queued. Frontend will pick it up on the next poll cycle (~3 s).',
+    workflowData,
+  });
+});
+
+// GET /api/external/schedules/copy-all-pending
+// Polled by the PSA frontend (JWT auth). Returns pending state + workflowData, then resets.
+app.get('/api/external/schedules/copy-all-pending', authenticate, (req, res) => {
+  const { active, workflowData } = pendingTrigger;
+  if (active) pendingTrigger = { active: false, workflowData: null }; // consume
+  res.json({ pending: active, workflowData });
+});
+
 const DAY_MAP = {
   monday: 'mon', tuesday: 'tue', wednesday: 'wed',
   thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun',
