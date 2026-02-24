@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int        @id @default(autoincrement())
+  username  String     @unique
+  role      String     @default("USER")
+  schedules Schedule[]
+  createdAt DateTime   @default(now())
+}
+
+model Schedule {
+  id           Int         @id @default(autoincrement())
+  userId       Int
+  projectTitle String
+  isAssigned   Boolean     @default(false)
+  user         User        @relation(fields: [userId], references: [id])
+  entries      TimeEntry[]
+  createdAt    DateTime    @default(now())
+}
+
+model TimeEntry {
+  id          Int      @id @default(autoincrement())
+  scheduleId  Int
+  weekEnding  DateTime
+  mon         Float?
+  tue         Float?
+  wed         Float?
+  thu         Float?
+  fri         Float?
+  sat         Float?
+  sun         Float?
+  notes       String   @default("{}")
+  isSubmitted Boolean  @default(false)
+  schedule    Schedule @relation(fields: [scheduleId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
