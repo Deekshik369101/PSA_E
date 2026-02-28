@@ -155,7 +155,7 @@ async function loadSchedules() {
     tbody.innerHTML = `<tr><td colspan="4" class="table-empty">Loading...</td></tr>`;
     try {
         const schedules = await api('GET', '/api/schedules');
-        // ── #4 Filter out schedules that have a submitted entry for this week
+        // Filter out schedules that have a submitted entry for this week
         const visible = schedules.filter(s => !submittedScheduleIds.has(s.id));
         if (!visible.length) {
             tbody.innerHTML = `<tr><td colspan="4" class="table-empty">No schedules assigned yet.</td></tr>`;
@@ -169,7 +169,7 @@ async function loadSchedules() {
           <input type="checkbox" class="sched-check schedule-checkbox" data-id="${s.id}" data-title="${escHtml(s.projectTitle)}" />
         </td>
         <td>${escHtml(s.projectTitle)}</td>
-        <td><span class="badge ${s.isAssigned ? 'badge-assigned' : 'badge-open'}">${s.isAssigned ? '✓ Assigned' : 'Unassigned'}</span></td>
+        <td><span class="badge ${s.isAssigned ? 'badge-assigned' : 'badge-open'}">${s.isAssigned ? '\u2713 Assigned' : 'Unassigned'}</span></td>
         <td class="text-muted">${fmtDate(s.createdAt)}</td>
       `;
             tbody.appendChild(tr);
@@ -467,24 +467,55 @@ function renderStatusBadge(status) {
 
 // ── Load existing entries for current week ────────────────────────
 async function loadEntriesForWeek() {
-    const weekEnding = $('week-ending').value;
+    const weekEnding = $('week-ending').value;  // 'YYYY-MM-DD'
     if (!weekEnding) return;
     try {
         const entries = await api('GET', `/api/entries?weekEnding=${weekEnding}`);
-        entries.forEach(e => {
-            // Track submitted schedule IDs for filtering the schedule table
-            if (e.isSubmitted) submittedScheduleIds.add(e.scheduleId);
+        let schedulesRefreshNeeded = false;
 
-            // Only show entries that belong to this user's schedules
+        entries.forEach(e => {
+            const serverDate = e.weekEnding ? e.weekEnding.substring(0, 10) : null;
+
+            // Always track submitted entries (even if date differs slightly)
+            if (e.isSubmitted) {
+                submittedScheduleIds.add(e.scheduleId);
+                schedulesRefreshNeeded = true;
+            }
+
+            // For non-submitted entries, enforce strict week match to avoid showing wrong week data
+            if (!e.isSubmitted && serverDate !== weekEnding) return;
+
             const title = e.schedule?.projectTitle || `Schedule #${e.scheduleId}`;
             if (!$(`entry-row-${e.scheduleId}`)) {
+                // Row doesn't exist yet — add it (handles externally-submitted entries)
                 const emptyRow = $('entry-empty-row');
                 if (emptyRow) emptyRow.remove();
                 addEntryRow(e.scheduleId, title, e.id, e, e.isSubmitted);
+            } else {
+                // Row already in DOM — sync entryId and status in entryMap
+                if (entryMap[e.scheduleId]) {
+                    entryMap[e.scheduleId].entryId = e.id;
+                    entryMap[e.scheduleId].status = e.status || entryMap[e.scheduleId].status;
+                    entryMap[e.scheduleId].isSubmitted = !!e.isSubmitted;
+                    const badgeCell = $(`status-badge-${e.scheduleId}`);
+                    if (badgeCell) badgeCell.innerHTML = renderStatusBadge(entryMap[e.scheduleId].status);
+                    // Disable inputs if now submitted
+                    if (e.isSubmitted) {
+                        const row = $(`entry-row-${e.scheduleId}`);
+                        if (row) {
+                            row.classList.add('submitted-row');
+                            row.querySelectorAll('.hour-input').forEach(i => i.disabled = true);
+                        }
+                    }
+                }
             }
         });
+
         updateEntryBadge();
         recalcTotals();
+
+        // Refresh the schedule panel so submitted rows are filtered out of the checklist
+        if (schedulesRefreshNeeded) loadSchedules();
     } catch (_) { /* no entries for week yet */ }
 }
 
@@ -582,9 +613,10 @@ async function saveEntries() {
     if (errors) {
         showToast(`Saved ${saved} rows. ${errors} error(s).`, 'warn');
     } else {
-        showToast(`✅ ${saved} row(s) saved successfully`, 'success');
-        // Enable submit only when all saves succeeded
+        showToast(`\u2705 ${saved} row(s) saved successfully`, 'success');
         if (saved > 0) $('submit-btn').disabled = false;
+        // BUG FIX: reload entries so entryId + status badge sync from server
+        await loadEntriesForWeek();
     }
     setStatus(`Last saved: ${new Date().toLocaleTimeString()}`);
 }
@@ -727,7 +759,7 @@ async function loadAdminSchedules() {
             tr.innerHTML = `
         <td>${s.id}</td>
         <td style="font-weight:600">${escHtml(s.projectTitle)}</td>
-        <td>${s.user ? escHtml(s.user.username) : '—'}</td>
+        <td>${s.user ? escHtml(s.user.username) : '\u2014'}</td>
         <td><span class="badge ${s.isAssigned ? 'badge-assigned' : 'badge-open'}">${s.isAssigned ? 'Assigned' : 'Unassigned'}</span></td>
         <td>
           <button class="btn btn-sm btn-danger" onclick="deleteSchedule(${s.id}, this)">
@@ -746,7 +778,6 @@ async function handleCreateTask(e) {
     const title = $('task-title').value.trim();
     const userId = $('task-user').value;
     if (!title) return showToast('Enter a project title', 'warn');
-    // ── #3 User selection is required ───────────────────────────
     if (!userId) {
         alert('Please select a user before assigning the task.');
         return;
@@ -754,7 +785,7 @@ async function handleCreateTask(e) {
 
     try {
         await api('POST', '/api/schedules', { projectTitle: title, userId: parseInt(userId) });
-        showToast('✅ Task created successfully', 'success');
+        showToast('\u2705 Task created successfully', 'success');
         $('task-title').value = '';
         $('task-user').value = '';
         loadAdminSchedules();

@@ -631,6 +631,33 @@ textarea {
   color: var(--purple);
 }
 
+/* Project Type Badges */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: .72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.type-customer {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.type-productive {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.type-overhead {
+  background: #fff8e1;
+  color: #e65100;
+}
+
 /* Notes button */
 .notes-btn {
   background: none;

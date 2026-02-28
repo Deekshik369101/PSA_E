@@ -19,10 +19,13 @@ model Schedule {
   id           Int         @id @default(autoincrement())
   userId       Int
   projectTitle String
+  projectType  String      @default("Customer Project")
   isAssigned   Boolean     @default(false)
   user         User        @relation(fields: [userId], references: [id])
   entries      TimeEntry[]
   createdAt    DateTime    @default(now())
+
+  @@unique([projectTitle, userId])
 }
 
 model TimeEntry {
